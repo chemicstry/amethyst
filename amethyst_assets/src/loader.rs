@@ -14,6 +14,9 @@ use crate::{
     Asset, Directory, Format, FormatValue, Progress, Source,
 };
 
+#[cfg(feature = "wasm")]
+use crate::source::HTTP;
+
 /// The asset loader, holding the sources and a reference to the `ThreadPool`.
 pub struct Loader {
     hot_reload: bool,
@@ -22,6 +25,7 @@ pub struct Loader {
 }
 
 impl Loader {
+    #[cfg(not(feature = "wasm"))]
     /// Creates a new asset loader, initializing the directory store with the
     /// given path.
     pub fn new<P>(directory: P, pool: Arc<ThreadPool>) -> Self
@@ -29,6 +33,16 @@ impl Loader {
         P: Into<PathBuf>,
     {
         Self::with_default_source(Directory::new(directory), pool)
+    }
+
+    #[cfg(feature = "wasm")]
+    /// Creates a new asset loader, initializing the directory store with the
+    /// given path.
+    pub fn new<P>(directory: P, pool: Arc<ThreadPool>) -> Self
+    where
+        P: Into<PathBuf>,
+    {
+        Self::with_default_source(HTTP::new(directory), pool)
     }
 
     /// Creates a new asset loader, using the provided source

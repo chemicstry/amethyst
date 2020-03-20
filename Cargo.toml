@@ -28,6 +28,8 @@ default = [
   "network",
   "renderer",
 
+  "wasm",
+
   # mp3 not enabled by default as it requires `minimp3`, which cannot be compiled for WASM targets.
   "flac",
   "vorbis",
@@ -114,6 +116,7 @@ experimental-spirv-reflection = ["amethyst_rendy/experimental-spirv-reflection"]
 wasm = [
   "amethyst_rendy/wasm",
   "amethyst_window/wasm",
+  "amethyst_assets/wasm",
 ]
 
 [workspace]
