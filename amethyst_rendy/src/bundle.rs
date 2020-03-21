@@ -117,10 +117,8 @@ impl<'a, 'b, B: Backend> SystemBundle<'a, 'b> for RenderingBundle<B> {
         }
 
         builder.add(MeshProcessorSystem::<B>::default(), "mesh_processor", &[]);
-        builder.add(
-            TextureProcessorSystem::<B>::default(),
-            "texture_processor",
-            &[],
+        builder.add_thread_local(
+            TextureProcessorSystem::<B>::default()
         );
         builder.add(Processor::<Material>::new(), "material_processor", &[]);
         builder.add(
