@@ -670,6 +670,7 @@ where
         world.insert(EventChannel::<Event<'static, ()>>::with_capacity(2000));
         world.insert(EventChannel::<UiEvent>::with_capacity(40));
         world.insert(EventChannel::<TransEvent<T, StateEvent>>::with_capacity(2));
+        #[cfg(not(feature = "wasm"))]
         world.insert(FrameLimiter::default());
         world.insert(Stopwatch::default());
         world.insert(Time::default());
