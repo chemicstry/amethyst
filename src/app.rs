@@ -641,21 +641,30 @@ where
 
         let mut world = World::new();
 
-        let thread_pool_builder = ThreadPoolBuilder::new();
-        #[cfg(feature = "profiler")]
-        let thread_pool_builder = thread_pool_builder.start_handler(|_index| {
-            register_thread_with_profiler();
-        });
         let pool: ArcThreadPool;
-        if let Some(thread_count) = thread_count {
-            debug!("Running Amethyst with fixed thread pool: {}", thread_count);
-            pool = thread_pool_builder
-                .num_threads(thread_count)
-                .build()
-                .map(Arc::new)?;
-        } else {
-            pool = thread_pool_builder.build().map(Arc::new)?;
+        #[cfg(not(feature = "wasm"))]
+        {
+            use rayon::ThreadPoolBuilder;
+            let thread_pool_builder = ThreadPoolBuilder::new();
+            #[cfg(feature = "profiler")]
+            let thread_pool_builder = thread_pool_builder.start_handler(|_index| {
+                register_thread_with_profiler();
+            });
+            if let Some(thread_count) = thread_count {
+                debug!("Running Amethyst with fixed thread pool: {}", thread_count);
+                pool = thread_pool_builder
+                    .num_threads(thread_count)
+                    .build()
+                    .map(Arc::new)?;
+            } else {
+                pool = thread_pool_builder.build().map(Arc::new)?;
+            }
         }
+        #[cfg(feature = "wasm")]
+        {
+            pool = Arc::new(web_worker::default_thread_pool());
+        }
+
         world.insert(Loader::new(path.as_ref().to_owned(), pool.clone()));
         world.insert(pool);
         world.insert(EventChannel::<Event<'static, ()>>::with_capacity(2000));
