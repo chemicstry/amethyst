@@ -6,6 +6,8 @@ use std::{fmt::Debug, ops::Deref, sync::Arc};
 #[cfg(feature = "profiler")]
 use thread_profiler::profile_scope;
 
+use async_trait::async_trait;
+
 /// One of the three core traits of this crate.
 ///
 /// You want to implement this for every type of asset like
@@ -51,6 +53,7 @@ impl<T: Asset<Data = T>> ProcessableAsset for T {
 /// The format type itself represents loading options, which are passed to `import`.
 /// E.g. for textures this would be stuff like mipmap levels and
 /// sampler info.
+#[async_trait(?Send)]
 pub trait Format<D: 'static>: objekt::Clone + Debug + Send + Sync + 'static {
     /// A unique identifier for this format.
     fn name(&self) -> &'static str;
@@ -77,7 +80,7 @@ pub trait Format<D: 'static>: objekt::Clone + Debug + Send + Sync + 'static {
     /// to reload assets if necessary (for hot reloading).
     /// You should only create `Reload` when `create_reload` is `Some`.
     /// Also, the parameter is just a request, which means it's optional either way.
-    fn import(
+    async fn import(
         &self,
         name: String,
         source: Arc<dyn Source>,
@@ -87,7 +90,7 @@ pub trait Format<D: 'static>: objekt::Clone + Debug + Send + Sync + 'static {
         profile_scope!("import_asset");
         if let Some(boxed_format) = create_reload {
             let (b, m) = source
-                .load_with_metadata(&name)
+                .load_with_metadata(&name).await
                 .with_context(|_| crate::error::Error::Source)?;
             Ok(FormatValue {
                 data: self.import_simple(b)?,
@@ -95,7 +98,7 @@ pub trait Format<D: 'static>: objekt::Clone + Debug + Send + Sync + 'static {
             })
         } else {
             let b = source
-                .load(&name)
+                .load(&name).await
                 .with_context(|_| crate::error::Error::Source)?;
             Ok(FormatValue::data(self.import_simple(b)?))
         }
@@ -119,6 +122,7 @@ pub trait SerializableFormat<D: FormatRegisteredData + 'static>:
 objekt::clone_trait_object!(<D> SerializableFormat<D>);
 
 // Allow using dynamic types on sites that accept format as generic.
+#[async_trait(?Send)]
 impl<D: 'static> Format<D> for Box<dyn Format<D>> {
     fn name(&self) -> &'static str {
         self.deref().name()
@@ -127,16 +131,17 @@ impl<D: 'static> Format<D> for Box<dyn Format<D>> {
         self.deref().import_simple(bytes)
     }
 
-    fn import(
+    async fn import(
         &self,
         name: String,
         source: Arc<dyn Source>,
         create_reload: Option<Box<dyn Format<D>>>,
     ) -> Result<FormatValue<D>, Error> {
-        self.deref().import(name, source, create_reload)
+        self.deref().import(name, source, create_reload).await
     }
 }
 
+#[async_trait(?Send)]
 impl<D: 'static> Format<D> for Box<dyn SerializableFormat<D>> {
     fn name(&self) -> &'static str {
         self.deref().name()
@@ -145,13 +150,13 @@ impl<D: 'static> Format<D> for Box<dyn SerializableFormat<D>> {
         self.deref().import_simple(bytes)
     }
 
-    fn import(
+    async fn import(
         &self,
         name: String,
         source: Arc<dyn Source>,
         create_reload: Option<Box<dyn Format<D>>>,
     ) -> Result<FormatValue<D>, Error> {
-        self.deref().import(name, source, create_reload)
+        self.deref().import(name, source, create_reload).await
     }
 }
 

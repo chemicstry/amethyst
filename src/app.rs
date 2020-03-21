@@ -5,7 +5,6 @@ use std::{env, marker::PhantomData, path::Path, sync::Arc, time::Duration};
 use crate::shred::Resource;
 use derivative::Derivative;
 use log::{debug, info, log_enabled, trace, Level};
-use rayon::ThreadPoolBuilder;
 #[cfg(feature = "sentry")]
 use sentry::integrations::panic::register_panic_handler;
 use winit::{event::Event, event_loop::ControlFlow};
@@ -173,7 +172,7 @@ where
     ///
     /// Application will return an error if the internal thread pool fails
     /// to initialize correctly because of systems resource limitations
-    pub fn new<P, S, I>(path: P, initial_state: S, init: I) -> Result<Self, Error>
+    pub fn new<P, S, I>(path: P, initial_state: S, init: I, worker_pool: &web_worker::WorkerPool) -> Result<Self, Error>
     where
         P: AsRef<Path>,
         S: State<T, E> + 'a,
@@ -181,20 +180,20 @@ where
         for<'b> R: EventReader<'b, Event = E>,
         R: Default,
     {
-        ApplicationBuilder::new(path, initial_state)?.build(init)
+        ApplicationBuilder::new(path, initial_state, worker_pool)?.build(init)
     }
 
     /// Creates a new ApplicationBuilder with the given initial game state.
     ///
     /// This is identical in function to
     /// [ApplicationBuilder::new](struct.ApplicationBuilder.html#method.new).
-    pub fn build<P, S>(path: P, initial_state: S) -> Result<ApplicationBuilder<S, T, E, R>, Error>
+    pub fn build<P, S>(path: P, initial_state: S, worker_pool: &web_worker::WorkerPool) -> Result<ApplicationBuilder<S, T, E, R>, Error>
     where
         P: AsRef<Path>,
         S: State<T, E> + 'a,
         for<'b> R: EventReader<'b, Event = E>,
     {
-        ApplicationBuilder::new(path, initial_state)
+        ApplicationBuilder::new(path, initial_state, worker_pool)
     }
 
     /// Run a gameloop without winit until the game state indicates that the game is no
@@ -226,17 +225,17 @@ where
             {
                 #[cfg(feature = "profiler")]
                 profile_scope!("frame_limiter wait");
-                self.world.write_resource::<FrameLimiter>().wait();
+                //self.world.write_resource::<FrameLimiter>().wait();
             }
             {
-                let elapsed = self.world.read_resource::<Stopwatch>().elapsed();
+                //let elapsed = self.world.read_resource::<Stopwatch>().elapsed();
                 let mut time = self.world.write_resource::<Time>();
                 time.increment_frame_number();
-                time.set_delta_time(elapsed);
+                time.set_delta_time(/*elapsed*/std::time::Duration::from_millis(1));
             }
-            let mut stopwatch = self.world.write_resource::<Stopwatch>();
-            stopwatch.stop();
-            stopwatch.restart();
+            //let mut stopwatch = self.world.write_resource::<Stopwatch>();
+            //stopwatch.stop();
+            //stopwatch.restart();
         }
 
         self.shutdown();
@@ -329,14 +328,14 @@ where
     where
         for<'b> R: EventReader<'b, Event = E>,
     {
-        self.world.write_resource::<Stopwatch>().start();
+        //self.world.write_resource::<Stopwatch>().start();
 
         if Event::MainEventsCleared == event {
             if !self.states.is_running() {
-                {
-                    let mut stopwatch = self.world.write_resource::<Stopwatch>();
-                    stopwatch.stop();
-                }
+                // {
+                //     let mut stopwatch = self.world.write_resource::<Stopwatch>();
+                //     stopwatch.stop();
+                // }
                 info!("Engine is shutting down");
                 self.data.dispose(&mut self.world);
 
@@ -347,17 +346,17 @@ where
             {
                 #[cfg(feature = "profiler")]
                 profile_scope!("frame_limiter wait");
-                self.world.write_resource::<FrameLimiter>().wait();
+                //self.world.write_resource::<FrameLimiter>().wait();
             }
             {
-                let elapsed = self.world.read_resource::<Stopwatch>().elapsed();
+                // let elapsed = self.world.read_resource::<Stopwatch>().elapsed();
                 let mut time = self.world.write_resource::<Time>();
                 time.increment_frame_number();
-                time.set_delta_time(elapsed);
+                time.set_delta_time(/*elapsed*/std::time::Duration::from_millis(1));
             }
-            let mut stopwatch = self.world.write_resource::<Stopwatch>();
-            stopwatch.stop();
-            stopwatch.restart();
+            // let mut stopwatch = self.world.write_resource::<Stopwatch>();
+            // stopwatch.stop();
+            // stopwatch.restart();
             *control_flow = ControlFlow::Poll;
         }
         {
@@ -605,7 +604,7 @@ where
     /// Ok(())
     /// # }
     /// ~~~
-    pub fn new<P: AsRef<Path>>(path: P, initial_state: S) -> Result<Self, Error> {
+    pub fn new<P: AsRef<Path>>(path: P, initial_state: S, worker_pool: &web_worker::WorkerPool) -> Result<Self, Error> {
         if !log_enabled!(Level::Error) {
             eprintln!(
                 "WARNING: No logger detected! Did you forget to call `amethyst::start_logger()`?"
@@ -643,27 +642,35 @@ where
 
         let mut world = World::new();
 
-        let thread_pool_builder = ThreadPoolBuilder::new();
-        #[cfg(feature = "profiler")]
-        let thread_pool_builder = thread_pool_builder.start_handler(|_index| {
-            register_thread_with_profiler();
-        });
         let pool: ArcThreadPool;
-        if let Some(thread_count) = thread_count {
-            debug!("Running Amethyst with fixed thread pool: {}", thread_count);
-            pool = thread_pool_builder
-                .num_threads(thread_count)
-                .build()
-                .map(Arc::new)?;
-        } else {
-            pool = thread_pool_builder.build().map(Arc::new)?;
+        #[cfg(not(feature = "wasm"))]
+        {
+            use rayon::ThreadPoolBuilder;
+            let thread_pool_builder = ThreadPoolBuilder::new();
+            #[cfg(feature = "profiler")]
+            let thread_pool_builder = thread_pool_builder.start_handler(|_index| {
+                register_thread_with_profiler();
+            });
+            if let Some(thread_count) = thread_count {
+                debug!("Running Amethyst with fixed thread pool: {}", thread_count);
+                pool = thread_pool_builder
+                    .num_threads(thread_count)
+                    .build()
+                    .map(Arc::new)?;
+            } else {
+                pool = thread_pool_builder.build().map(Arc::new)?;
+            }
+        }
+        #[cfg(feature = "wasm")]
+        {
+            pool = Arc::new(web_worker::new_thread_pool(2, worker_pool));
         }
         world.insert(Loader::new(path.as_ref().to_owned(), pool.clone()));
         world.insert(pool);
         world.insert(EventChannel::<Event<'static, ()>>::with_capacity(2000));
         world.insert(EventChannel::<UiEvent>::with_capacity(40));
         world.insert(EventChannel::<TransEvent<T, StateEvent>>::with_capacity(2));
-        world.insert(FrameLimiter::default());
+        //world.insert(FrameLimiter::default());
         world.insert(Stopwatch::default());
         world.insert(Time::default());
         world.insert(CallbackQueue::default());
