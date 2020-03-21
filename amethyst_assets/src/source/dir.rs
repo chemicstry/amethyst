@@ -4,8 +4,6 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use async_trait::async_trait;
-
 #[cfg(feature = "profiler")]
 use thread_profiler::profile_scope;
 
@@ -41,7 +39,6 @@ impl Directory {
     }
 }
 
-#[async_trait(?Send)]
 impl Source for Directory {
     fn modified(&self, path: &str) -> Result<u64, Error> {
         #[cfg(feature = "profiler")]
@@ -61,7 +58,7 @@ impl Source for Directory {
             .map(|d| d.as_secs())
     }
 
-    async fn load(&self, path: &str) -> Result<Vec<u8>, Error> {
+    fn load(&self, path: &str) -> Result<Vec<u8>, Error> {
         #[cfg(feature = "profiler")]
         profile_scope!("dir_load_asset");
         use std::io::Read;

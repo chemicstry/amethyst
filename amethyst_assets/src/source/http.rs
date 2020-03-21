@@ -5,8 +5,6 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestInit, RequestMode, Response};
 use js_sys::Uint8Array;
 
-use async_trait::async_trait;
-
 #[cfg(feature = "profiler")]
 use thread_profiler::profile_scope;
 
@@ -16,17 +14,15 @@ use crate::{error, source::Source};
 
 /// HTTP source.
 ///
-/// Please note that there is a default directory source
-/// inside the `Loader`, which is automatically used when you call
-/// `load`. In case you want another, second, directory for assets,
-/// you can instantiate one yourself, too. Please use `Loader::load_from` then.
+/// Loads assets inside web worker using XmlHttpRequest.
+/// Used as a default source for WASM target.
 #[derive(Debug)]
 pub struct HTTP {
     loc: PathBuf,
 }
 
 impl HTTP {
-    /// Creates a new http storage.
+    /// Creates a new http source.
     pub fn new<P>(loc: P) -> Self
     where
         P: Into<PathBuf>,
@@ -42,7 +38,6 @@ impl HTTP {
     }
 }
 
-#[async_trait(?Send)]
 impl Source for HTTP {
     fn modified(&self, path: &str) -> Result<u64, Error> {
         #[cfg(feature = "profiler")]
@@ -52,32 +47,41 @@ impl Source for HTTP {
         Ok(0)
     }
 
-    async fn load(&self, path: &str) -> Result<Vec<u8>, Error> {
+    fn load(&self, path: &str) -> Result<Vec<u8>, Error> {
         #[cfg(feature = "profiler")]
         profile_scope!("http_load_asset");
 
         let path = self.path(path);
-        let path_str = path.to_str().ok_or_else(|| error::Error::Source)?;
+        let path_str = path.to_str()
+            .ok_or_else(|| format_err!("Path contains non-unicode characters {:?}", path))
+            .with_context(|_| error::Error::Source)?;
 
-        let mut opts = RequestInit::new();
-        opts.method("GET");
-        opts.mode(RequestMode::Cors);
+        let xhr = web_sys::XmlHttpRequest::new()
+            .map_err(|_| format_err!("Failed to construct XmlHttpRequest"))
+            .with_context(|_| error::Error::Source)?;
 
-        let request = Request::new_with_str_and_init(path_str, &opts)
-            .map_err(|_| error::Error::Source)?;
+        // Synchronous GET request. Should only be run in web worker.
+        xhr.open_with_async("GET", path_str, false);
+        xhr.set_response_type(web_sys::XmlHttpRequestResponseType::Arraybuffer);
 
-        let window = web_sys::window().unwrap();
-        let resp_value = JsFuture::from(window.fetch_with_request(&request)).await.map_err(|_| error::Error::Source)?;
+        // We block here and wait for http fetch to complete
+        xhr.send()
+            .map_err(|_| format_err!("XmlHttpRequest send failed"))
+            .with_context(|_| error::Error::Source)?;
 
-        // `resp_value` is a `Response` object.
-        assert!(resp_value.is_instance_of::<Response>());
-        let resp: Response = resp_value.dyn_into().unwrap();
+        // Status returns a result but according to javascript spec it should never return error.
+        // Returns 0 is request was not completed.
+        let status = xhr.status().unwrap();
+        if status != 200 {
+            let msg = xhr.status_text().unwrap_or("".to_string());
+            return Err(format_err!("XmlHttpRequest failed with code {}. Error: {}", status, msg))
+                .with_context(|_| error::Error::Source)
+        }
 
-        // Convert this other `Promise` into a rust `Future`.
-        let arr = JsFuture::from(resp.array_buffer().map_err(|_| error::Error::Source)?).await.map_err(|_| error::Error::Source)?;
+        let resp = xhr.response().unwrap();
 
-        // Convert array buffer into vec
-        let arr = Uint8Array::new(&arr);
+        // Convert javascript ArrayBuffer into Vec<u8>
+        let arr = Uint8Array::new(&resp);
         let mut v = vec![0; arr.length() as usize];
         arr.copy_to(&mut v);
 

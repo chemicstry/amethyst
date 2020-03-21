@@ -67,28 +67,6 @@ where
     Loaded(A),
 }
 
-async fn reload_worker<A>(
-    rel: Box<dyn Reload<A::Data>>,
-    processed: Arc<SegQueue<Processed<A>>>,
-    format_name: &str,
-    name: String,
-    handle: Handle<A>,
-) where
-    A: Asset,
-{
-    let old_reload = rel.clone();
-    let data = rel.reload().await;
-    //    .with_context(|_| error::Error::Format(&format_name));
-
-    let p = Processed::HotReload {
-        data,
-        name,
-        handle,
-        old_reload,
-    };
-    processed.push(p);
-}
-
 impl<A: Asset> AssetStorage<A> {
     /// Creates a new asset storage.
     pub fn new() -> Self {
@@ -480,7 +458,16 @@ impl<A: Asset> AssetStorage<A> {
             if let Some(handle) = handle {
                 let processed = self.processed.clone();
                 pool.spawn(move || {
-                    reload_worker(rel, processed, format, name, handle);
+                    let old_reload = rel.clone();
+                    let data = rel.reload().with_context(|_| error::Error::Format(format));
+
+                    let p = Processed::HotReload {
+                        data,
+                        name,
+                        handle,
+                        old_reload,
+                    };
+                    processed.push(p);
                 });
             }
         }

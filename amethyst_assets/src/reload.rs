@@ -15,8 +15,6 @@ use thread_profiler::profile_scope;
 
 use crate::{Format, FormatValue, Loader, Source};
 
-use async_trait::async_trait;
-
 /// This bundle activates hot reload for the `Loader`,
 /// adds a `HotReloadStrategy` and the `HotReloadSystem`.
 #[derive(Default)]
@@ -194,7 +192,6 @@ impl<'a> System<'a> for HotReloadSystem {
 }
 
 /// The `Reload` trait provides a method which checks if an asset needs to be reloaded.
-#[async_trait(?Send)]
 pub trait Reload<D>: ReloadClone<D> + Send + Sync + 'static {
     /// Checks if a reload is necessary.
     fn needs_reload(&self) -> bool;
@@ -203,7 +200,7 @@ pub trait Reload<D>: ReloadClone<D> + Send + Sync + 'static {
     /// Returns the format name.
     fn format(&self) -> &'static str;
     /// Reloads the asset.
-    async fn reload(self: Box<Self>) -> Result<FormatValue<D>, Error>;
+    fn reload(self: Box<Self>) -> Result<FormatValue<D>, Error>;
 }
 
 pub trait ReloadClone<D> {
@@ -262,7 +259,6 @@ impl<D: 'static> Clone for SingleFile<D> {
     }
 }
 
-#[async_trait(?Send)]
 impl<D: 'static> Reload<D> for SingleFile<D> {
     fn needs_reload(&self) -> bool {
         self.modified != 0 && (self.source.modified(&self.path).unwrap_or(0) > self.modified)
@@ -276,7 +272,7 @@ impl<D: 'static> Reload<D> for SingleFile<D> {
         self.format.name()
     }
 
-    async fn reload(self: Box<Self>) -> Result<FormatValue<D>, Error> {
+    fn reload(self: Box<Self>) -> Result<FormatValue<D>, Error> {
         #[cfg(feature = "profiler")]
         profile_scope!("reload_single_file");
 
@@ -288,6 +284,6 @@ impl<D: 'static> Reload<D> for SingleFile<D> {
             ..
         } = this;
 
-        format.import(path, source, Some(objekt::clone(&format))).await
+        format.import(path, source, Some(objekt::clone(&format)))
     }
 }

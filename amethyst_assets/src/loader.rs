@@ -2,13 +2,7 @@ use std::{borrow::Borrow, hash::Hash, path::PathBuf, sync::Arc};
 
 use fnv::FnvHashMap;
 use log::debug;
-
-//#[cfg(not(feature = "wasm"))]
 use rayon::ThreadPool;
-//#[cfg(feature = "wasm")]
-//use web_worker::WorkerPool as ThreadPool;
-
-use crossbeam_queue::SegQueue;
 
 use amethyst_error::ResultExt;
 #[cfg(feature = "profiler")]
@@ -17,7 +11,6 @@ use thread_profiler::profile_scope;
 use crate::{
     error::Error,
     storage::{AssetStorage, Handle, Processed},
-    progress::Tracker,
     Asset, Directory, Format, FormatValue, Progress, Source,
 };
 
@@ -29,34 +22,6 @@ pub struct Loader {
     hot_reload: bool,
     pool: Arc<ThreadPool>,
     sources: FnvHashMap<String, Arc<dyn Source>>,
-}
-
-async fn load_worker<A, F>(
-    name: String,
-    format: F,
-    source: Arc<dyn Source>,
-    hot_reload: Option<Box<dyn Format<A::Data>>>,
-    format_name: String,
-    tracker: Box<dyn Tracker>,
-    handle: Handle<A>,
-    processed: Arc<SegQueue<Processed<A>>>,
-)
-where
-    A: Asset,
-    F: Format<A::Data>,
-{
-    #[cfg(feature = "profiler")]
-    profile_scope!("load_asset_from_worker");
-    let data = format
-        .import(name.clone(), source, hot_reload).await;
-    //    .with_context(|_| Error::Format(&fmn));
-
-    processed.push(Processed::NewAsset {
-        data,
-        handle,
-        name,
-        tracker,
-    });
 }
 
 impl Loader {
@@ -175,6 +140,7 @@ impl Loader {
     {
         #[cfg(feature = "profiler")]
         profile_scope!("load_asset_from");
+        use crate::progress::Tracker;
 
         let name = name.into();
         let source = source.as_ref();
@@ -210,12 +176,19 @@ impl Loader {
         };
 
         let cl = move || {
+            #[cfg(feature = "profiler")]
+            profile_scope!("load_asset_from_worker");
+            let data = format
+                .import(name.clone(), source, hot_reload)
+                .with_context(|_| Error::Format(format_name));
             let tracker = Box::new(tracker) as Box<dyn Tracker>;
-            let f = load_worker(name, format, source, hot_reload, format_name.to_string(), tracker, handle, processed);
-            use futures::executor::block_on;
-            log::info!("start block");
-            block_on(f);
-            log::info!("end block");
+
+            processed.push(Processed::NewAsset {
+                data,
+                handle,
+                name,
+                tracker,
+            });
         };
         self.pool.spawn(cl);
 
