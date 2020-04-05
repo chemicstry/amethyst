@@ -41,7 +41,7 @@ use amethyst_rendy::{
 };
 use amethyst_window::ScreenDimensions;
 use derivative::Derivative;
-use glsl_layout::{vec2, vec4, AsStd140};
+use glsl_layout::{uint, vec2, vec4, AsStd140};
 use std::cmp::Ordering;
 
 #[cfg(feature = "profiler")]
@@ -96,6 +96,17 @@ impl<B: Backend> RenderPlugin<B> for RenderUi {
     }
 }
 
+pub(crate) enum UiTextureType {
+    General = 0x00,
+    Glyph = 0x01,
+}
+
+impl Into<uint> for UiTextureType {
+    fn into(self) -> uint {
+        self as uint
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, AsStd140)]
 #[repr(C, align(4))]
 pub(crate) struct UiArgs {
@@ -103,7 +114,7 @@ pub(crate) struct UiArgs {
     pub(crate) dimensions: vec2,
     pub(crate) tex_coord_bounds: vec4,
     pub(crate) color: vec4,
-    pub(crate) color_bias: vec4,
+    pub(crate) tex_type: uint,
 }
 
 impl AsVertex for UiArgs {
@@ -113,7 +124,7 @@ impl AsVertex for UiArgs {
             (Format::Rg32Sfloat, "dimensions"),
             (Format::Rgba32Sfloat, "tex_coord_bounds"),
             (Format::Rgba32Sfloat, "color"),
-            (Format::Rgba32Sfloat, "color_bias"),
+            (Format::R32Uint, "tex_type"),
         ))
     }
 }
@@ -414,7 +425,7 @@ impl<B: Backend> RenderGroup<B, World> for DrawUi<B> {
                                 dimensions: [w, h].into(),
                                 tex_coord_bounds: [0., 0., 1., 1.].into(),
                                 color: tint.unwrap_or([1., 1., 1., 1.]).into(),
-                                color_bias: [0., 0., 0., 0.].into(),
+                                tex_type: UiTextureType::General.into(),
                             }),
                         )
                     }
@@ -588,7 +599,7 @@ fn render_image<B: Backend>(
         dimensions: [transform.pixel_width, transform.pixel_height].into(),
         tex_coord_bounds: tex_coords.into(),
         color: color.into(),
-        color_bias: [0., 0., 0., 0.].into(),
+        tex_type: UiTextureType::General.into(),
     };
 
     match raw_image {

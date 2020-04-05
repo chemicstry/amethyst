@@ -8,11 +8,11 @@ layout(location = 0) in vec2 coords;
 layout(location = 1) in vec2 dimensions;
 layout(location = 2) in vec4 tex_coord_bounds;
 layout(location = 3) in vec4 color;
-layout(location = 4) in vec4 color_bias;
+layout(location = 4) in uint tex_type;
 
 layout(location = 0) out vec2 vert_out_tex_coords;
 layout(location = 1) out vec4 vert_out_color;
-layout(location = 2) out vec4 vert_out_color_bias;
+layout(location = 2) flat out uint vert_out_tex_type;
 
 const vec2 positions[4] = vec2[](
     vec2(0.5, -0.5), // Right bottom
@@ -27,7 +27,7 @@ void main() {
     vec2 coords_base = pos + vec2(0.5);
     vert_out_tex_coords = mix(tex_coord_bounds.xy, tex_coord_bounds.zw, coords_base);
     vert_out_color = color;
-    vert_out_color_bias = color_bias;
+    vert_out_tex_type = tex_type;
 
     vec2 center = coords * inverse_window_size;
     center.y = 1.0 - center.y;

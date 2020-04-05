@@ -1,8 +1,9 @@
 //! Module containing the system managing glyphbrush state for visible UI Text components.
 
 use crate::{
-    pass::UiArgs, text::CachedGlyph, FontAsset, LineMode, Selected, TextEditing, UiText,
-    UiTransform,
+    pass::{UiArgs, UiTextureType},
+    text::CachedGlyph,
+    FontAsset, LineMode, Selected, TextEditing, UiText, UiTransform,
 };
 use amethyst_assets::{AssetStorage, Handle};
 use amethyst_core::{
@@ -459,7 +460,7 @@ impl<'a, B: Backend> System<'a> for UiGlyphsSystem<B> {
                             dimensions: dims.into(),
                             tex_coord_bounds: tex_coord_bounds.into(),
                             color: glyph.color.into(),
-                            color_bias: [1., 1., 1., 0.].into(),
+                            tex_type: UiTextureType::Glyph.into(),
                         },
                     )
                 },
@@ -544,7 +545,7 @@ impl<'a, B: Backend> System<'a> for UiGlyphsSystem<B> {
                                 dimensions: [g.advance_width, height].into(),
                                 tex_coord_bounds: [0., 0., 1., 1.].into(),
                                 color: bg_color.into(),
-                                color_bias: [1., 1., 1., 0.].into(),
+                                tex_type: UiTextureType::Glyph.into(),
                             });
                             let mut glyph_data = glyphs.get_mut(entity).unwrap();
                             glyph_data.sel_vertices.extend(iter);
@@ -632,23 +633,12 @@ fn create_glyph_texture<B: Backend>(
     use hal::format::{Component as C, Swizzle};
     log::trace!("Creating new glyph texture with size ({}, {})", w, h);
 
-    // This swizzle is required when working with `R8Unorm` on metal.
-    // Glyph texture is biased towards 1.0 using "color_bias" attribute instead.
-    #[cfg(not(feature = "gl"))]
-    let swizzle = Swizzle(C::Zero, C::Zero, C::Zero, C::R);
-
-    // GL doesn't support swizzling apart from `Swizzle(C::R, C::G, C::B, C::A)`.
-    // However, we don't need to swizzle for UI. The above swizzle is simply for `metal`.
-    #[cfg(feature = "gl")]
-    let swizzle = Swizzle::NO;
-
     TextureBuilder::new()
         .with_kind(hal::image::Kind::D2(w, h, 1, 1))
         .with_view_kind(hal::image::ViewKind::D2)
         .with_data_width(w)
         .with_data_height(h)
         .with_data(vec![R8Unorm { repr: [0] }; (w * h) as _])
-        .with_swizzle(swizzle)
         .build(
             ImageState {
                 queue,
