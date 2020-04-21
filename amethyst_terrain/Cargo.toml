@@ -1,0 +1,30 @@
+[package]
+name = "amethyst_terrain"
+version = "0.1.0"
+authors = ["Jurgis Balčiūnas <chemicstry@gmail.com>", "Amethyst Foundation <contact@amethyst.rs>"]
+edition = "2018"
+description = "Amethyst Terrain crate"
+keywords = ["terrain", "specs", "ecs", "amethyst"]
+categories = ["game-engines"]
+
+#documentation = "https://docs.amethyst.rs/stable/amethyst_terrain/"
+homepage = "https://amethyst.rs/"
+repository = "https://github.com/amethyst/amethyst"
+license = "MIT/Apache-2.0"
+
+[dependencies]
+amethyst_core = { path = "../amethyst_core", version = "0.10.0" }
+amethyst_rendy = { path = "../amethyst_rendy", version = "0.5.0" }
+amethyst_assets = { path = "../amethyst_assets", version = "0.11.0" }
+amethyst_error = { path = "../amethyst_error", version = "0.5.0" }
+lazy_static = "1.4"
+failure = "0.1"
+glsl-layout = "0.3"
+thread_profiler = { version = "0.3", optional = true }
+
+[features]
+vulkan = ["amethyst_rendy/vulkan", "amethyst_rendy/vulkan-x11"]
+metal = ["amethyst_rendy/metal"]
+empty = ["amethyst_rendy/empty"]
+
+profiler = [ "thread_profiler/thread_profiler" ]

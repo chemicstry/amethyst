@@ -81,6 +81,8 @@ pub use amethyst_locale as locale;
 #[cfg(feature = "network")]
 pub use amethyst_network as network;
 pub use amethyst_rendy as renderer;
+#[cfg(feature = "terrain")]
+pub use amethyst_terrain as terrain;
 #[cfg(feature = "tiles")]
 pub use amethyst_tiles as tiles;
 pub use amethyst_ui as ui;

@@ -44,6 +44,9 @@ locale = [
 network = [
     "amethyst_network"
 ]
+terrain = [
+    "amethyst_terrain"
+]
 
 renderer = [
     "amethyst_rendy",
@@ -63,6 +66,7 @@ profiler = [
     "amethyst_rendy/profiler",
     "amethyst_ui/profiler",
     "amethyst_utils/profiler",
+    "amethyst_terrain/profiler",
     "amethyst_tiles/profiler",
 ]
 sdl_controller = [
@@ -106,6 +110,7 @@ members = [
   "amethyst_input",
   "amethyst_ui",
   "amethyst_utils",
+  "amethyst_terrain",
   "amethyst_test",
   "amethyst_tiles",
   "amethyst_window",
@@ -129,6 +134,7 @@ amethyst_ui = { path = "amethyst_ui", version = "0.10.0" }
 amethyst_utils = { path = "amethyst_utils", version = "0.10.0" }
 amethyst_window = { path = "amethyst_window", version = "0.5.0" }
 amethyst_tiles = { path = "amethyst_tiles", version = "0.3.0", optional = true }
+amethyst_terrain = { path = "amethyst_terrain", version = "0.1.0", optional = true }
 crossbeam-channel = "0.4.0"
 derivative = "1.0.3"
 fern = { version = "0.5.9", features = ["colored"] }
@@ -335,6 +341,11 @@ required-features = ["animation", "gltf"]
 name = "tiles"
 path = "examples/tiles/main.rs"
 required-features = [ "tiles" ]
+
+[[example]]
+name = "terrain"
+path = "examples/terrain/main.rs"
+required-features = [ "terrain" ]
 
 [package.metadata.docs.rs]
 features = ["animation", "audio", "gltf", "tiles", "json", "locale", "network", "sdl_controller", "vulkan"]
