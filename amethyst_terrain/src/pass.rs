@@ -1,53 +1,36 @@
-use amethyst_core::{
-    ecs::{
-        DispatcherBuilder, Entities, Join, Read, ReadExpect, ReadStorage, System, SystemData, World,
-    },
-    geometry::{Plane, Ray},
-    math::{self, clamp, convert, Matrix4, Point2, Point3, Vector2, Vector3, Vector4},
-    transform::Transform,
-    Hidden,
-};
-
-use amethyst_assets::{AssetStorage, Handle};
 use amethyst_rendy::{
-    batch::{GroupIterator, OneLevelBatch, OrderedOneLevelBatch},
-    bundle::{RenderOrder, RenderPlan, RenderPlugin, Target},
-    camera::{ActiveCamera, Camera, Projection},
+    batch::{GroupIterator, OrderedTwoLevelBatch, TwoLevelBatch},
+    mtl::{FullTextureSet, Material, StaticTextureSet},
     pipeline::{PipelineDescBuilder, PipelinesBuilder},
-    pod::{IntoPod, VertexArgs},
-    rendy::{
-        command::{QueueId, RenderPassEncoder},
-        factory::Factory,
-        graph::{
-            render::{PrepareResult, RenderGroup, RenderGroupDesc},
-            GraphContext, NodeBuffer, NodeImage,
-        },
-        hal::{
-            self,
-            device::Device,
-            pso::{self, ShaderStageFlags},
-            format::Format,
-        },
-        mesh::{AsVertex, Position, TexCoord, VertexFormat},
-        shader::{Shader, ShaderSetBuilder, SpirvShader},
-    },
-    resources::Tint as TintComponent,
-    sprite::{SpriteRender, SpriteSheet},
-    sprite_visibility::SpriteVisibility,
-    submodules::{
-        gather::CameraGatherer, DynamicUniform, DynamicVertexBuffer, FlatEnvironmentSub, TextureId,
-        TextureSub,
-    },
-    types::{Backend, Texture},
-    util, ChangeDetection,
+    pod::{SkinnedVertexArgs, VertexArgs},
+    resources::Tint,
+    skinning::JointTransforms,
+    submodules::{DynamicVertexBuffer, EnvironmentSub, MaterialId, MaterialSub, SkinningSub},
+    transparent::Transparent,
+    types::{Backend, Mesh},
+    util,
+    visibility::Visibility,
 };
-
-use crate::TerrainMaterial;
-
-use glsl_layout::*;
-
-#[cfg(feature = "profiler")]
-use thread_profiler::profile_scope;
+use amethyst_assets::{AssetStorage, Handle};
+use amethyst_core::{
+    ecs::{Join, Read, ReadExpect, ReadStorage, SystemData, World},
+    transform::Transform,
+    Hidden, HiddenPropagate,
+};
+use derivative::Derivative;
+use rendy::{
+    command::{QueueId, RenderPassEncoder},
+    factory::Factory,
+    graph::{
+        render::{PrepareResult, RenderGroup, RenderGroupDesc},
+        GraphContext, NodeBuffer, NodeImage,
+    },
+    hal::{self, device::Device, pso},
+    mesh::{AsVertex, VertexFormat},
+    shader::{Shader, SpirvShader},
+};
+use smallvec::SmallVec;
+use std::marker::PhantomData;
 
 lazy_static::lazy_static! {
     static ref VERTEX: SpirvShader = SpirvShader::from_bytes(
@@ -67,23 +50,31 @@ lazy_static::lazy_static! {
         .with_fragment(&*FRAGMENT).unwrap();
 }
 
-#[derive(Clone, Copy, Debug, AsStd140)]
-#[repr(C, align(4))]
-pub struct UniformArgs {
-    pub scale: float,
+macro_rules! profile_scope_impl {
+    ($string:expr) => {
+        #[cfg(feature = "profiler")]
+        let _profile_scope = thread_profiler::ProfileScope::new(format!(
+            "{} {}: {}",
+            module_path!(),
+            <T as Base3DPassDef>::NAME,
+            $string
+        ));
+    };
 }
 
-#[derive(Debug, Default)]
-pub struct DrawTerrainDesc;
+/// Draw opaque 3d meshes with specified shaders and texture set
+#[derive(Clone, Derivative)]
+#[derivative(Debug(bound = ""), Default(bound = ""))]
+pub struct DrawTerrainDesc {}
 
 impl DrawTerrainDesc {
+    /// Create pass in default configuration
     pub fn new() -> Self {
         Default::default()
     }
 }
 
-impl<B: Backend> RenderGroupDesc<B, World> for DrawTerrainDesc
-{
+impl<B: Backend> RenderGroupDesc<B, World> for DrawTerrainDesc<B> {
     fn build(
         self,
         _ctx: &GraphContext<B>,
@@ -96,94 +87,377 @@ impl<B: Backend> RenderGroupDesc<B, World> for DrawTerrainDesc
         _buffers: Vec<NodeBuffer>,
         _images: Vec<NodeImage>,
     ) -> Result<Box<dyn RenderGroup<B, World>>, failure::Error> {
-        #[cfg(feature = "profiler")]
-        profile_scope!("build");
+        profile_scope_impl!("build");
 
-        let env = DynamicUniform::new(factory, pso::ShaderStageFlags::VERTEX)?;
-        let vertex = DynamicVertexBuffer::new();
-
-        let (pipeline, pipeline_layout) = build_terrain_pipeline(
+        let env = EnvironmentSub::new(
             factory,
-            subpass,
-            framebuffer_width,
-            framebuffer_height,
-            vec![env.raw_layout()],
+            [
+                hal::pso::ShaderStageFlags::VERTEX,
+                hal::pso::ShaderStageFlags::FRAGMENT,
+            ],
         )?;
+        let materials = MaterialSub::new(factory)?;
 
         let mut vertex_format = vec![
             Position::vertex(),
             TexCoord::vertex(),
         ];
 
-        Ok(Box::new(DrawTerrain {
-            pipeline,
+        let (mut pipelines, pipeline_layout) = build_pipelines::<B, T>(
+            factory,
+            subpass,
+            framebuffer_width,
+            framebuffer_height,
+            &vertex_format,
+            vec![
+                env.raw_layout(),
+                materials.raw_layout(),
+            ],
+        )?;
+
+        vertex_format.sort();
+
+        Ok(Box::new(DrawTerrain::<B, T> {
+            pipeline_basic: pipelines.remove(0),
+            pipeline_skinned: pipelines.pop(),
             pipeline_layout,
+            static_batches: Default::default(),
+            skinned_batches: Default::default(),
+            vertex_format_base,
+            vertex_format_skinned,
             env,
-            batches: Default::default(),
-            vertex_format,
-            vertex,
-            vertex_count: 0,
-            change: Default::default(),
+            materials,
+            skinning,
+            models: DynamicVertexBuffer::new(),
+            skinned_models: DynamicVertexBuffer::new(),
+            marker: PhantomData,
         }))
     }
 }
 
-#[derive(Debug)]
-pub struct DrawTerrain<B: Backend> {
+/// Base implementation of a 3D render pass which can be consumed by actual 3D render passes,
+/// such as [pass::pbr::DrawPbr]
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""))]
+pub struct DrawTerrain<B: Backend, T: Base3DPassDef> {
     pipeline: B::GraphicsPipeline,
     pipeline_layout: B::PipelineLayout,
-    env: DynamicUniform<B, UniformArgs>,
-    batches: TwoLevelBatch<TerrainMaterial, u32, SmallVec<[VertexArgs; 4]>>,
+    batches: TwoLevelBatch<MaterialId, u32, SmallVec<[VertexArgs; 4]>>,
     vertex_format: Vec<VertexFormat>,
+    env: EnvironmentSub<B>,
+    materials: MaterialSub<B, T::TextureSet>,
     models: DynamicVertexBuffer<B, VertexArgs>,
-    change: ChangeDetection,
 }
 
-impl<B: Backend> RenderGroup<B, World> for DrawTerrain<B>
-{
+impl<B: Backend, T: Base3DPassDef> RenderGroup<B, World> for DrawTerrain<B, T> {
     fn prepare(
         &mut self,
         factory: &Factory<B>,
         _queue: QueueId,
         index: usize,
         _subpass: hal::pass::Subpass<'_, B>,
-        world: &World,
+        resources: &World,
     ) -> PrepareResult {
-        #[cfg(feature = "profiler")]
-        profile_scope!("prepare");
+        profile_scope_impl!("prepare opaque");
 
         let (
             mesh_storage,
-            mesh_handles,
-            terrain_textures,
+            visibility,
+            transparent,
+            hiddens,
+            hiddens_prop,
+            meshes,
+            materials,
             transforms,
             tints,
         ) = <(
             Read<'_, AssetStorage<Mesh>>,
+            ReadExpect<'_, Visibility>,
+            ReadStorage<'_, Transparent>,
+            ReadStorage<'_, Hidden>,
+            ReadStorage<'_, HiddenPropagate>,
             ReadStorage<'_, Handle<Mesh>>,
-            ReadStorage<'_, TerrainMaterial>,
+            ReadStorage<'_, Handle<Material>>,
             ReadStorage<'_, Transform>,
             ReadStorage<'_, Tint>,
         )>::fetch(resources);
 
+        // Prepare environment
+        self.env.process(factory, index, resources);
+        self.materials.maintain();
+
+        self.batches.clear_inner();
+
+        let materials_ref = &mut self.materials;
+        let batches_ref = &mut self.batches;
+
+        let static_input = || ((&materials, &meshes, &transforms, tints.maybe()), !&joints);
+        {
+            profile_scope_impl!("prepare");
+            (static_input(), &visibility.visible_unordered)
+                .join()
+                .map(|(((mat, mesh, tform, tint), _), _)| {
+                    ((mat, mesh.id()), VertexArgs::from_object_data(tform, tint))
+                })
+                .for_each_group(|(mat, mesh_id), data| {
+                    if mesh_storage.contains_id(mesh_id) {
+                        if let Some((mat, _)) = materials_ref.insert(factory, resources, mat) {
+                            batches_ref.insert(mat, mesh_id, data.drain(..));
+                        }
+                    }
+                });
+        }
+
+        {
+            profile_scope_impl!("write");
+
+            self.batches.prune();
+
+            self.models.write(
+                factory,
+                index,
+                self.batches.count() as u64,
+                self.batches.data(),
+            );
+        }
+        PrepareResult::DrawRecord
+    }
+
+    fn draw_inline(
+        &mut self,
+        mut encoder: RenderPassEncoder<'_, B>,
+        index: usize,
+        _subpass: hal::pass::Subpass<'_, B>,
+        resources: &World,
+    ) {
+        profile_scope_impl!("draw opaque");
+
+        let mesh_storage = <Read<'_, AssetStorage<Mesh>>>::fetch(resources);
+        let models_loc = self.vertex_format.len() as u32;
+
+        encoder.bind_graphics_pipeline(&self.pipeline);
+        self.env.bind(index, &self.pipeline_layout, 0, &mut encoder);
+
+        if self.models.bind(index, models_loc, 0, &mut encoder) {
+            let mut instances_drawn = 0;
+            for (&mat_id, batches) in self.batches.iter() {
+                if self.materials.loaded(mat_id) {
+                    self.materials
+                        .bind(&self.pipeline_layout, 1, mat_id, &mut encoder);
+                    for (mesh_id, batch_data) in batches {
+                        debug_assert!(mesh_storage.contains_id(*mesh_id));
+                        if let Some(mesh) =
+                            B::unwrap_mesh(unsafe { mesh_storage.get_by_id_unchecked(*mesh_id) })
+                        {
+                            mesh.bind_and_draw(
+                                0,
+                                &self.vertex_format,
+                                instances_drawn..instances_drawn + batch_data.len() as u32,
+                                &mut encoder,
+                            )
+                            .unwrap();
+                        }
+                        instances_drawn += batch_data.len() as u32;
+                    }
+                }
+            }
+        }
+    }
+
+    fn dispose(mut self: Box<Self>, factory: &mut Factory<B>, _aux: &World) {
+        profile_scope_impl!("dispose");
+        unsafe {
+            factory
+                .device()
+                .destroy_graphics_pipeline(self.pipeline);
+            factory
+                .device()
+                .destroy_pipeline_layout(self.pipeline_layout);
+        }
+    }
+}
+
+/// Draw transparent mesh with physically based lighting
+#[derive(Clone, Derivative)]
+#[derivative(Debug(bound = ""), Default(bound = ""))]
+pub struct DrawTerrainTransparentDesc;
+
+impl DrawTerrainTransparentDesc {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
+impl<B: Backend> RenderGroupDesc<B, World> for DrawTerrainTransparentDesc {
+    fn build(
+        self,
+        _ctx: &GraphContext<B>,
+        factory: &mut Factory<B>,
+        _queue: QueueId,
+        _aux: &World,
+        framebuffer_width: u32,
+        framebuffer_height: u32,
+        subpass: hal::pass::Subpass<'_, B>,
+        _buffers: Vec<NodeBuffer>,
+        _images: Vec<NodeImage>,
+    ) -> Result<Box<dyn RenderGroup<B, World>>, failure::Error> {
+        let env = EnvironmentSub::new(
+            factory,
+            [
+                hal::pso::ShaderStageFlags::VERTEX,
+                hal::pso::ShaderStageFlags::FRAGMENT,
+            ],
+        )?;
+
+        let materials = MaterialSub::new(factory)?;
+
+        let mut vertex_format_base = T::base_format();
+        let mut vertex_format_skinned = T::skinned_format();
+
+        let (mut pipeline, pipeline_layout) = build_terrain_pipeline(
+            factory,
+            subpass,
+            framebuffer_width,
+            framebuffer_height,
+            &vertex_format_base,
+            &vertex_format_skinned,
+            self.skinning,
+            true,
+            vec![
+                env.raw_layout(),
+                materials.raw_layout(),
+            ],
+        )?;
+
+        vertex_format.sort();
+
+        Ok(Box::new(DrawTerrainTransparent::<B, T> {
+            pipeline,
+            pipeline_layout,
+            batches: Default::default(),
+            vertex_format,
+            env,
+            materials,
+            models: DynamicVertexBuffer::new(),
+            change: Default::default(),
+        }))
+    }
+}
+
+/// Draw transparent mesh with physically based lighting
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""))]
+pub struct DrawTerrainTransparent<B: Backend> {
+    pipeline: B::GraphicsPipeline,
+    pipeline_layout: B::PipelineLayout,
+    batches: OrderedTwoLevelBatch<MaterialId, u32, VertexArgs>,
+    vertex_format: Vec<VertexFormat>,
+    env: EnvironmentSub<B>,
+    materials: MaterialSub<B, FullTextureSet>,
+    models: DynamicVertexBuffer<B, VertexArgs>,
+    change: util::ChangeDetection,
+}
+
+impl<B: Backend> RenderGroup<B, World> for DrawTerrainTransparent<B> {
+    fn prepare(
+        &mut self,
+        factory: &Factory<B>,
+        _queue: QueueId,
+        index: usize,
+        _subpass: hal::pass::Subpass<'_, B>,
+        resources: &World,
+    ) -> PrepareResult {
+        profile_scope_impl!("prepare transparent");
+
+        let (mesh_storage, visibility, meshes, materials, transforms, joints, tints) =
+            <(
+                Read<'_, AssetStorage<Mesh>>,
+                ReadExpect<'_, Visibility>,
+                ReadStorage<'_, Handle<Mesh>>,
+                ReadStorage<'_, Handle<Material>>,
+                ReadStorage<'_, Transform>,
+                ReadStorage<'_, JointTransforms>,
+                ReadStorage<'_, Tint>,
+            )>::fetch(resources);
+
+        // Prepare environment
+        self.env.process(factory, index, resources);
+        self.materials.maintain();
+
+        self.static_batches.swap_clear();
+        self.skinned_batches.swap_clear();
+
+        let materials_ref = &mut self.materials;
+        let skinning_ref = &mut self.skinning;
+        let batches_ref = &mut self.static_batches;
+        let skinned_ref = &mut self.skinned_batches;
         let mut changed = false;
 
-        (&mesh_handles, &terrain_tiles, &transforms, &tints.maybe())
-            .join()
-            .map(|(mat, mesh, tform, tint)| {
+        let mut joined = ((&materials, &meshes, &transforms, tints.maybe()), !&joints).join();
+        visibility
+            .visible_ordered
+            .iter()
+            .filter_map(|e| joined.get_unchecked(e.id()))
+            .map(|((mat, mesh, tform, tint), _)| {
                 ((mat, mesh.id()), VertexArgs::from_object_data(tform, tint))
             })
             .for_each_group(|(mat, mesh_id), data| {
                 if mesh_storage.contains_id(mesh_id) {
-                    // if let Some((mat, _)) = materials_ref.insert(factory, resources, mat) {
-                    //     statics_ref.insert(mat, mesh_id, data.drain(..));
-                    // }
-                    statics_ref.insert(mat, mesh_id, data.drain(..));
+                    if let Some((mat, this_changed)) = materials_ref.insert(factory, resources, mat)
+                    {
+                        changed = changed || this_changed;
+                        batches_ref.insert(mat, mesh_id, data.drain(..));
+                    }
                 }
             });
 
-        let uniform = UniformArgs { scale: 1.0 };
-        self.env.write(factory, index, scale.std140());
+        if self.pipeline_skinned.is_some() {
+            let mut joined = (&materials, &meshes, &transforms, tints.maybe(), &joints).join();
+
+            visibility
+                .visible_ordered
+                .iter()
+                .filter_map(|e| joined.get_unchecked(e.id()))
+                .map(|(mat, mesh, tform, tint, joints)| {
+                    (
+                        (mat, mesh.id()),
+                        SkinnedVertexArgs::from_object_data(
+                            tform,
+                            tint,
+                            skinning_ref.insert(joints),
+                        ),
+                    )
+                })
+                .for_each_group(|(mat, mesh_id), data| {
+                    if mesh_storage.contains_id(mesh_id) {
+                        if let Some((mat, this_changed)) =
+                            materials_ref.insert(factory, resources, mat)
+                        {
+                            changed = changed || this_changed;
+                            skinned_ref.insert(mat, mesh_id, data.drain(..));
+                        }
+                    }
+                });
+        }
+
+        self.models.write(
+            factory,
+            index,
+            self.static_batches.count() as u64,
+            Some(self.static_batches.data()),
+        );
+
+        self.skinned_models.write(
+            factory,
+            index,
+            self.skinned_batches.count() as u64,
+            Some(self.skinned_batches.data()),
+        );
+
+        self.skinning.commit(factory, index);
+
+        changed = changed || self.static_batches.changed();
+        changed = changed || self.skinned_batches.changed();
 
         self.change.prepare_result(index, changed)
     }
@@ -193,30 +467,90 @@ impl<B: Backend> RenderGroup<B, World> for DrawTerrain<B>
         mut encoder: RenderPassEncoder<'_, B>,
         index: usize,
         _subpass: hal::pass::Subpass<'_, B>,
-        _world: &World,
+        resources: &World,
     ) {
-        #[cfg(feature = "profiler")]
-        profile_scope!("draw");
+        profile_scope_impl!("draw transparent");
 
+        let mesh_storage = <Read<'_, AssetStorage<Mesh>>>::fetch(resources);
         let layout = &self.pipeline_layout;
-        encoder.bind_graphics_pipeline(&self.pipeline);
-        self.env.bind(index, layout, 0, &mut encoder);
+        let encoder = &mut encoder;
 
-        self.vertex.bind(index, 0, 0, &mut encoder);
-        // for (&tex, range) in self.sprites.iter() {
-        //     if self.textures.loaded(tex) {
-        //         self.textures.bind(layout, 1, tex, &mut encoder);
+        let models_loc = self.vertex_format_base.len() as u32;
+        let skin_models_loc = self.vertex_format_skinned.len() as u32;
 
-        //         unsafe {
-        //             encoder.draw(0..4, range);
-        //         }
-        //     }
-        // }
+        encoder.bind_graphics_pipeline(&self.pipeline_basic);
+        self.env.bind(index, layout, 0, encoder);
+
+        if self.models.bind(index, models_loc, 0, encoder) {
+            for (&mat, batches) in self.static_batches.iter() {
+                if self.materials.loaded(mat) {
+                    self.materials.bind(layout, 1, mat, encoder);
+                    for (mesh, range) in batches {
+                        debug_assert!(mesh_storage.contains_id(*mesh));
+                        if let Some(mesh) =
+                            B::unwrap_mesh(unsafe { mesh_storage.get_by_id_unchecked(*mesh) })
+                        {
+                            if let Err(error) = mesh.bind_and_draw(
+                                0,
+                                &self.vertex_format_base,
+                                range.clone(),
+                                encoder,
+                            ) {
+                                log::warn!(
+                                    "Trying to draw a mesh that lacks {:?} vertex attributes. Pass {} requires attributes {:?}.",
+                                    error.not_found.attributes,
+                                    T::NAME,
+                                    T::base_format(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(pipeline_skinned) = self.pipeline_skinned.as_ref() {
+            encoder.bind_graphics_pipeline(pipeline_skinned);
+
+            if self.skinned_models.bind(index, skin_models_loc, 0, encoder) {
+                self.skinning.bind(index, layout, 2, encoder);
+                for (&mat, batches) in self.skinned_batches.iter() {
+                    if self.materials.loaded(mat) {
+                        self.materials.bind(layout, 1, mat, encoder);
+                        for (mesh, range) in batches {
+                            debug_assert!(mesh_storage.contains_id(*mesh));
+                            if let Some(mesh) =
+                                B::unwrap_mesh(unsafe { mesh_storage.get_by_id_unchecked(*mesh) })
+                            {
+                                if let Err(error) = mesh.bind_and_draw(
+                                    0,
+                                    &self.vertex_format_skinned,
+                                    range.clone(),
+                                    encoder,
+                                ) {
+                                    log::warn!(
+                                        "Trying to draw a skinned mesh that lacks {:?} vertex attributes. Pass {} requires attributes {:?}.",
+                                        error.not_found.attributes,
+                                        T::NAME,
+                                        T::skinned_format(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    fn dispose(self: Box<Self>, factory: &mut Factory<B>, _aux: &World) {
+    fn dispose(mut self: Box<Self>, factory: &mut Factory<B>, _aux: &World) {
         unsafe {
-            factory.device().destroy_graphics_pipeline(self.pipeline);
+            factory
+                .device()
+                .destroy_graphics_pipeline(self.pipeline_basic);
+            if let Some(pipeline) = self.pipeline_skinned.take() {
+                factory.device().destroy_graphics_pipeline(pipeline);
+            }
             factory
                 .device()
                 .destroy_pipeline_layout(self.pipeline_layout);
@@ -229,111 +563,97 @@ fn build_terrain_pipeline<B: Backend>(
     subpass: hal::pass::Subpass<'_, B>,
     framebuffer_width: u32,
     framebuffer_height: u32,
+    vertex_format: &[VertexFormat],
     layouts: Vec<&B::DescriptorSetLayout>,
-) -> Result<(B::GraphicsPipeline, B::PipelineLayout), failure::Error> {
+) -> Result<(Vec<B::GraphicsPipeline>, B::PipelineLayout), failure::Error> {
     let pipeline_layout = unsafe {
         factory
             .device()
             .create_pipeline_layout(layouts, None as Option<(_, _)>)
     }?;
 
-    // Load the shaders
-    let shader_vertex = unsafe { VERTEX.module(factory).unwrap() };
-    let shader_fragment = unsafe { FRAGMENT.module(factory).unwrap() };
+    let vertex_desc = vertex_format_base
+        .iter()
+        .map(|f| (f.clone(), pso::VertexInputRate::Vertex))
+        .chain(Some((
+            VertexArgs::vertex(),
+            pso::VertexInputRate::Instance(1),
+        )))
+        .collect::<Vec<_>>();
 
-    // Build the pipeline
-    let pipes = PipelinesBuilder::new()
-        .with_pipeline(
-            PipelineDescBuilder::new()
-                // This Pipeline uses our custom vertex description and does not use instancing
-                .with_vertex_desc(&[(CustomArgs::vertex(), pso::VertexInputRate::Vertex)])
-                .with_input_assembler(pso::InputAssemblerDesc::new(hal::Primitive::TriangleList))
-                // Add the shaders
-                .with_shaders(util::simple_shader_set(
-                    &shader_vertex,
-                    Some(&shader_fragment),
-                ))
-                .with_layout(&pipeline_layout)
-                .with_subpass(subpass)
-                .with_framebuffer_size(framebuffer_width, framebuffer_height)
-                // We are using alpha blending
-                .with_blend_targets(vec![pso::ColorBlendDesc {
-                    mask: pso::ColorMask::ALL,
-                    blend: Some(pso::BlendState::ALPHA),
-                }]),
-        )
-        .build(factory, None);
+    let shader_vertex_basic = unsafe { T::vertex_shader().module(factory).unwrap() };
+    let shader_fragment = unsafe { T::fragment_shader().module(factory).unwrap() };
+    let pipe_desc = PipelineDescBuilder::new()
+        .with_vertex_desc(&vertex_desc)
+        .with_shaders(util::simple_shader_set(
+            &shader_vertex_basic,
+            Some(&shader_fragment),
+        ))
+        .with_layout(&pipeline_layout)
+        .with_subpass(subpass)
+        .with_framebuffer_size(framebuffer_width, framebuffer_height)
+        .with_face_culling(pso::Face::BACK)
+        .with_depth_test(pso::DepthTest {
+            fun: pso::Comparison::Less,
+            write: !transparent,
+        })
+        .with_blend_targets(vec![pso::ColorBlendDesc {
+            mask: pso::ColorMask::ALL,
+            blend: if transparent {
+                Some(pso::BlendState::PREMULTIPLIED_ALPHA)
+            } else {
+                None
+            },
+        }]);
 
-    // Destoy the shaders once loaded
+    let pipelines = if skinning {
+        let shader_vertex_skinned = unsafe { T::vertex_skinned_shader().module(factory).unwrap() };
+
+        let vertex_desc = vertex_format_skinned
+            .iter()
+            .map(|f| (f.clone(), pso::VertexInputRate::Vertex))
+            .chain(Some((
+                SkinnedVertexArgs::vertex(),
+                pso::VertexInputRate::Instance(1),
+            )))
+            .collect::<Vec<_>>();
+
+        let pipe = PipelinesBuilder::new()
+            .with_pipeline(pipe_desc.clone())
+            .with_child_pipeline(
+                0,
+                pipe_desc
+                    .with_vertex_desc(&vertex_desc)
+                    .with_shaders(util::simple_shader_set(
+                        &shader_vertex_skinned,
+                        Some(&shader_fragment),
+                    )),
+            )
+            .build(factory, None);
+
+        unsafe {
+            factory.destroy_shader_module(shader_vertex_skinned);
+        }
+
+        pipe
+    } else {
+        PipelinesBuilder::new()
+            .with_pipeline(pipe_desc)
+            .build(factory, None)
+    };
+
     unsafe {
-        factory.destroy_shader_module(shader_vertex);
+        factory.destroy_shader_module(shader_vertex_basic);
         factory.destroy_shader_module(shader_fragment);
     }
 
-    // Handle the Errors
-    match pipes {
+    match pipelines {
         Err(e) => {
             unsafe {
                 factory.device().destroy_pipeline_layout(pipeline_layout);
             }
             Err(e)
         }
-        Ok(mut pipes) => Ok((pipes.remove(0), pipeline_layout)),
-    }
-}
-
-#[derive(Debug)]
-pub struct RenderTerrain {
-    target: Target,
-}
-
-impl Default for RenderTerrain {
-    fn default() -> Self {
-        Self {
-            target: Target::Main
-        }
-    }
-}
-
-impl RenderTerrain {
-    /// Select render target on which Tiles should be rendered.
-    #[must_use]
-    pub fn with_target(mut self, target: Target) -> Self {
-        self.target = target;
-        self
-    }
-}
-
-type SetupData<'a> = (
-    ReadStorage<'a, TerrainMaterial>,
-    ReadStorage<'a, Hidden>,
-);
-
-impl<B: Backend> RenderPlugin<B> for RenderTerrain
-{
-    fn on_build<'a, 'b>(
-        &mut self,
-        world: &mut World,
-        builder: &mut DispatcherBuilder<'a, 'b>,
-    ) -> Result<(), amethyst_error::Error> {
-        SetupData::setup(world);
-
-        Ok(())
-    }
-
-    fn on_plan(
-        &mut self,
-        plan: &mut RenderPlan<B>,
-        _factory: &mut Factory<B>,
-        _res: &World,
-    ) -> Result<(), amethyst_error::Error> {
-        plan.extend_target(self.target, |ctx| {
-            ctx.add(
-                RenderOrder::BeforeTransparent,
-                DrawTerrainDesc::default().builder(),
-            )?;
-            Ok(())
-        });
-        Ok(())
+        Ok(pipelines) => Ok((pipelines, pipeline_layout)),
     }
 }
