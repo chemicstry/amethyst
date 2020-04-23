@@ -27,6 +27,8 @@ pub struct MaterialPrefab {
     pub ambient_occlusion: Option<TexturePrefab>,
     /// Cavity map.
     pub cavity: Option<TexturePrefab>,
+    /// Splat map for terrain.
+    pub splat: Option<TexturePrefab>,
     /// Texture offset.
     pub uv_offset: TextureOffset,
     /// Set material as `Transparent`
@@ -60,6 +62,7 @@ impl Default for MaterialPrefab {
             metallic_roughness: None,
             ambient_occlusion: None,
             cavity: None,
+            splat: None,
             uv_offset: TextureOffset::default(),
             transparent: false,
             alpha_cutoff: std::f32::MIN_POSITIVE,
@@ -141,6 +144,11 @@ impl<'a> PrefabData<'a> for MaterialPrefab {
                 ret = true;
             }
         }
+        if let Some(ref mut texture) = self.splat {
+            if texture.load_sub_assets(progress, tp_data)? {
+                ret = true;
+            }
+        }
 
         if self.handle.is_none() {
             let mtl = Material {
@@ -156,6 +164,7 @@ impl<'a> PrefabData<'a> for MaterialPrefab {
                     &mat_default.0.ambient_occlusion,
                 ),
                 cavity: load_handle(&self.cavity, &mat_default.0.cavity),
+                splat: load_handle(&self.splat, &mat_default.0.splat),
                 uv_offset: self.uv_offset.clone(),
                 alpha_cutoff: self.alpha_cutoff,
             };

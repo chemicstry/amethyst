@@ -7,8 +7,10 @@ mod flat2d;
 mod pbr;
 mod shaded;
 mod skybox;
+mod terrain_flat;
+mod terrain_shaded;
 
-pub use self::{base_3d::*, debug_lines::*, flat::*, flat2d::*, pbr::*, shaded::*, skybox::*};
+pub use self::{base_3d::*, debug_lines::*, flat::*, flat2d::*, pbr::*, shaded::*, skybox::*, terrain_flat::*, terrain_shaded::*};
 
 use rendy::{hal::pso::ShaderStageFlags, shader::SpirvShader};
 
@@ -87,6 +89,30 @@ lazy_static::lazy_static! {
 
     static ref SKYBOX_FRAGMENT: SpirvShader = SpirvShader::from_bytes(
         include_bytes!("../../compiled/fragment/skybox.frag.spv"),
+        ShaderStageFlags::FRAGMENT,
+        "main",
+    ).unwrap();
+
+    static ref TERRAIN_POS_TEX_VERTEX: SpirvShader = SpirvShader::from_bytes(
+        include_bytes!("../../compiled/vertex/terrain_pos_tex.vert.spv"),
+        ShaderStageFlags::VERTEX,
+        "main",
+    ).unwrap();
+
+    static ref TERRAIN_FLAT_FRAGMENT: SpirvShader = SpirvShader::from_bytes(
+        include_bytes!("../../compiled/fragment/terrain_flat.frag.spv"),
+        ShaderStageFlags::FRAGMENT,
+        "main",
+    ).unwrap();
+
+    static ref TERRAIN_POS_NORM_TEX_VERTEX: SpirvShader = SpirvShader::from_bytes(
+        include_bytes!("../../compiled/vertex/terrain_pos_norm_tex.vert.spv"),
+        ShaderStageFlags::VERTEX,
+        "main",
+    ).unwrap();
+
+    static ref TERRAIN_SHADED_FRAGMENT: SpirvShader = SpirvShader::from_bytes(
+        include_bytes!("../../compiled/fragment/terrain_shaded.frag.spv"),
         ShaderStageFlags::FRAGMENT,
         "main",
     ).unwrap();

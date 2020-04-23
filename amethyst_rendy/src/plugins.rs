@@ -138,6 +138,10 @@ pub type RenderShaded3D = RenderBase3D<crate::pass::ShadedPassDef>;
 /// A `RenderPlugin` for forward rendering of 3d objects using physically-based shading.
 pub type RenderPbr3D = RenderBase3D<crate::pass::PbrPassDef>;
 
+/// A `RenderPlugin` for forward rendering of 3d objects using flat shading.
+pub type RenderTerrainFlat = RenderBase3D<crate::pass::TerrainFlatPassDef>;
+pub type RenderTerrainShaded = RenderBase3D<crate::pass::TerrainShadedPassDef>;
+
 /// A `RenderPlugin` for forward rendering of 3d objects.
 /// Generic over 3d pass rendering method.
 #[derive(derivative::Derivative)]

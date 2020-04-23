@@ -39,6 +39,8 @@ pub struct Material {
     pub ambient_occlusion: Handle<Texture>,
     /// Cavity map.
     pub cavity: Handle<Texture>,
+    /// Splat map for terrain,
+    pub splat: Handle<Texture>,
     /// Texture offset
     pub uv_offset: TextureOffset,
 }
@@ -104,6 +106,7 @@ impl_texture!(TexNormal, normal);
 impl_texture!(TexMetallicRoughness, metallic_roughness);
 impl_texture!(TexAmbientOcclusion, ambient_occlusion);
 impl_texture!(TexCavity, cavity);
+impl_texture!(TexSplat, splat);
 
 macro_rules! recursive_iter {
     (@value $first:expr, $($rest:expr),*) => { $first.chain(recursive_iter!(@value $($rest),*)) };

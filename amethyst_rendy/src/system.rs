@@ -280,6 +280,7 @@ fn create_default_mat<B: Backend>(world: &mut World) -> Material {
     let metallic_roughness = load_from_linear_rgba(LinSrgba::new(0.0, 0.5, 0.0, 0.0));
     let ambient_occlusion = load_from_linear_rgba(LinSrgba::new(1.0, 1.0, 1.0, 1.0));
     let cavity = load_from_linear_rgba(LinSrgba::new(1.0, 1.0, 1.0, 1.0));
+    let splat = load_from_linear_rgba(LinSrgba::new(1.0, 1.0, 1.0, 1.0));
 
     let tex_storage = world.fetch();
 
@@ -289,6 +290,7 @@ fn create_default_mat<B: Backend>(world: &mut World) -> Material {
     let metallic_roughness = loader.load_from_data(metallic_roughness.into(), (), &tex_storage);
     let ambient_occlusion = loader.load_from_data(ambient_occlusion.into(), (), &tex_storage);
     let cavity = loader.load_from_data(cavity.into(), (), &tex_storage);
+    let splat = loader.load_from_data(splat.into(), (), &tex_storage);
 
     Material {
         alpha_cutoff: 0.01,
@@ -298,6 +300,7 @@ fn create_default_mat<B: Backend>(world: &mut World) -> Material {
         metallic_roughness,
         ambient_occlusion,
         cavity,
+        splat,
         uv_offset: TextureOffset::default(),
     }
 }

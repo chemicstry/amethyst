@@ -345,7 +345,7 @@ required-features = [ "tiles" ]
 [[example]]
 name = "terrain"
 path = "examples/terrain/main.rs"
-required-features = [ "terrain" ]
+#required-features = [ "terrain" ]
 
 [package.metadata.docs.rs]
 features = ["animation", "audio", "gltf", "tiles", "json", "locale", "network", "sdl_controller", "vulkan"]
